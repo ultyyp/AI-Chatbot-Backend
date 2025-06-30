@@ -33,10 +33,10 @@ namespace AI_Chatbot_Backend.Controllers
                     chatId = Guid.NewGuid().ToString();
                 }
 
-                // Store user messages
+                // Store new user messages
                 await _chatHistoryService.AddMessagesAsync(chatId, messages);
 
-                // Retrieve full history
+                // Retrieve full chat history
                 var history = await _chatHistoryService.GetHistoryAsync(chatId);
 
                 var apiKey = _configuration["OpenRouter:ApiKey"];
@@ -47,18 +47,26 @@ namespace AI_Chatbot_Backend.Controllers
                 client.DefaultRequestHeaders.Add("HTTP-Referer", "http://localhost:3000");
                 client.DefaultRequestHeaders.Add("X-Title", "AI Chatbot");
 
-                var openRouterMessages = history.Select(m => new
-                {
-                    role = m.Role.ToLower(),
-                    content = m.Message
-                }).ToList();
+                // Prepare OpenRouter-compatible message format
+                var openRouterMessages = new List<object>
+        {
+            new { role = "system", content = "You are a helpful assistant." }
+        };
 
-                var requestBody = new
-                {
-                    model,
-                    messages = openRouterMessages
-                };
+                openRouterMessages.AddRange(history
+                    .Where(m => m.Role == "User" || m.Role == "AI")
+                    .Select(m => new
+                    {
+                        role = m.Role == "User" ? "user" : "assistant",
+                        content = m.Message
+                    }));
 
+                // Debug logging for prompt sent to OpenRouter
+                _logger.LogInformation("Sending to OpenRouter:\n{0}",
+                    JsonSerializer.Serialize(openRouterMessages, new JsonSerializerOptions { WriteIndented = true }));
+
+                // Send request to OpenRouter
+                var requestBody = new { model, messages = openRouterMessages };
                 var response = await client.PostAsync(
                     "https://openrouter.ai/api/v1/chat/completions",
                     new StringContent(JsonSerializer.Serialize(requestBody), Encoding.UTF8, "application/json")
@@ -80,14 +88,14 @@ namespace AI_Chatbot_Backend.Controllers
                     return StatusCode(500, new { message = "No response from AI" });
                 }
 
-                var aiMessage = choices[0].GetProperty("message").GetProperty("content").GetString()
-                    ?? "No response";
+                var aiMessage = choices[0].GetProperty("message").GetProperty("content").GetString() ?? "No response";
 
+                // Save AI response
                 await _chatHistoryService.AddMessagesAsync(chatId, new List<MessageDTO> {
-                    new MessageDTO { Role = "AI", Message = aiMessage }
-                 });
+            new MessageDTO { Role = "AI", Message = aiMessage }
+        });
 
-                // ✅ Always return the chatId to the client
+                // Return result
                 return Ok(new
                 {
                     message = aiMessage,
@@ -100,5 +108,6 @@ namespace AI_Chatbot_Backend.Controllers
                 return StatusCode(500, new { message = "Internal server error" });
             }
         }
+
     }
 }
